@@ -1,0 +1,26 @@
+{
+  "manifest_version": 3,
+  "name": "TRACE — Media Authenticity",
+  "version": "1.0.0",
+  "description": "Verify media authenticity on any webpage using the TRACE protocol",
+  "permissions": ["activeTab", "storage"],
+  "host_permissions": [
+    "https://trace-cbvb.onrender.com/*",
+    "https://www.traceprotocol.co/*",
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "TRACE Media Verifier"
+  }
+}
