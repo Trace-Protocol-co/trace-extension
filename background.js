@@ -66,22 +66,24 @@ async function handleVerify(hash, pageUrl, imgSrc) {
     const key = {
       VERIFIED_ORIGINAL: "verified", MODIFIED: "modified",
       AI_GENERATED: "ai_generated", UNVERIFIED: "unverified",
+      UNKNOWN: "unverified",
     }[result.verdict];
 
-    if (key) {
-      chrome.storage.local.get([key, "recent_scans"], items => {
-        chrome.storage.local.set({ [key]: ((items[key] || 0) + 1) });
-        const scans = items.recent_scans || [];
-        scans.unshift({
-          hash, verdict: result.verdict,
-          url: pageUrl || "",
-          source: pageUrl ? new URL(pageUrl).hostname : "Unknown",
-          timestamp: Date.now(),
-          mediaId: result.mediaId,
-        });
-        chrome.storage.local.set({ recent_scans: scans.slice(0, 20) });
+    // Always write to recent_scans regardless of verdict
+    chrome.storage.local.get(["verified","modified","unverified","ai_generated","recent_scans"], items => {
+      const updated = {};
+      if (key) updated[key] = (items[key] || 0) + 1;
+      const scans = items.recent_scans || [];
+      scans.unshift({
+        hash, verdict: result.verdict,
+        url: pageUrl || "",
+        source: pageUrl ? new URL(pageUrl).hostname : "Unknown",
+        timestamp: Date.now(),
+        mediaId: result.mediaId,
       });
-    }
+      updated.recent_scans = scans.slice(0, 20);
+      chrome.storage.local.set(updated);
+    });
     return result;
   } catch(e) {
     console.error("Verify failed:", e);
