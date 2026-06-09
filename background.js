@@ -6,6 +6,7 @@ const cache   = new Map();
 const TTL     = 5 * 60 * 1000;
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+
   if (message.type === "SET_ENABLED") {
     chrome.storage.local.set({ trace_enabled: message.enabled });
     sendResponse({ ok: true });
@@ -21,13 +22,10 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     fetch(API_URL + "/v1/health")
       .then(r => r.json())
       .then(d => sendResponse({ ok: true, registered: d.registered || 0 }))
-      .catch(e => { console.error("Health check failed:", e); sendResponse({ ok: false }); });
+      .catch(() => sendResponse({ ok: false }));
     return true;
   }
 
-  // Passive bank encounter — routes through background to bypass page CSP
-  // News sites (BBC, Guardian) block fetch from content scripts
-  // Background service workers are NOT subject to page CSP
   if (message.type === "BANK_ENCOUNTER") {
     fetch(API_URL + "/v1/bank/encounter", {
       method: "POST",
@@ -38,9 +36,10 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         verdict:   message.verdict || "UNKNOWN",
         media_url: message.media_url,
       }),
-    }).catch(() => {}); // passive — never fail
+    }).catch(() => {});
     return true;
   }
+
 });
 
 async function handleVerify(hash, pageUrl, imgSrc) {
@@ -55,35 +54,46 @@ async function handleVerify(hash, pageUrl, imgSrc) {
     let result;
     if (data && data.mediaId) {
       const verdict = toVerdict(data.integrity, data.revoked);
-      result = { found: true, verdict, mediaId: data.mediaId, creator: data.creator,
-        timestamp: data.timestamp, description: data.description };
+      result = {
+        found: true, verdict,
+        mediaId: data.mediaId,
+        creator: data.creator,
+        timestamp: data.timestamp,
+        description: data.description,
+      };
     } else {
       result = { found: false, verdict: "UNKNOWN" };
     }
 
     cache.set(cacheKey, { data: result, ts: Date.now() });
 
-    const key = {
-      VERIFIED_ORIGINAL: "verified", MODIFIED: "modified",
-      AI_GENERATED: "ai_generated", UNVERIFIED: "unverified",
-      UNKNOWN: "unverified",
-    }[result.verdict];
-
-    // Always write to recent_scans regardless of verdict
+    // Always write to recent scans — including UNKNOWN
+    const source = pageUrl ? new URL(pageUrl).hostname : "Unknown";
     chrome.storage.local.get(["verified","modified","unverified","ai_generated","recent_scans"], items => {
       const updated = {};
-      if (key) updated[key] = (items[key] || 0) + 1;
+
+      // Increment the right counter
+      if (result.verdict === "VERIFIED_ORIGINAL") updated.verified    = (items.verified    || 0) + 1;
+      if (result.verdict === "MODIFIED")          updated.modified    = (items.modified    || 0) + 1;
+      if (result.verdict === "UNVERIFIED")        updated.unverified  = (items.unverified  || 0) + 1;
+      if (result.verdict === "AI_GENERATED")      updated.ai_generated = (items.ai_generated || 0) + 1;
+      if (result.verdict === "UNKNOWN")           updated.unverified  = (items.unverified  || 0) + 1;
+
+      // Add to recent scans
       const scans = items.recent_scans || [];
       scans.unshift({
-        hash, verdict: result.verdict,
-        url: pageUrl || "",
-        source: pageUrl ? new URL(pageUrl).hostname : "Unknown",
+        hash,
+        verdict:   result.verdict,
+        url:       pageUrl || "",
+        source,
         timestamp: Date.now(),
-        mediaId: result.mediaId,
+        mediaId:   result.mediaId || null,
       });
       updated.recent_scans = scans.slice(0, 20);
+
       chrome.storage.local.set(updated);
     });
+
     return result;
   } catch(e) {
     console.error("Verify failed:", e);
