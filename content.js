@@ -22,9 +22,9 @@
 
   // ── Passive bank sighting — runs for every image encountered ─────────────────
   // Defined first so it's available throughout the script
+  // Route through background service worker to bypass CSP restrictions on news sites
   async function writeBankSighting(img, verdict) {
     try {
-      // Try all possible src attributes — BBC uses data-src, data-bbc-width, etc.
       const src = img.currentSrc || img.src
         || img.getAttribute("data-src") || img.getAttribute("data-lazy")
         || img.getAttribute("data-original") || img.getAttribute("data-bbc-width")
@@ -34,17 +34,15 @@
       const hashBuffer = await crypto.subtle.digest("SHA-256", msgBuffer);
       const urlHash = Array.from(new Uint8Array(hashBuffer))
         .map(b => b.toString(16).padStart(2, "0")).join("").slice(0, 32);
-      await fetch(TRACE_API + "/v1/bank/encounter", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          url_hash:  urlHash,
-          source:    window.location.hostname,
-          verdict:   verdict || "UNKNOWN",
-          media_url: src.slice(0, 200),
-        }),
+      // Send to background — background scripts are not subject to page CSP
+      chrome.runtime.sendMessage({
+        type: "BANK_ENCOUNTER",
+        url_hash:  urlHash,
+        source:    window.location.hostname,
+        verdict:   verdict || "UNKNOWN",
+        media_url: src.slice(0, 200),
       });
-    } catch { /* passive — never block the badge */ }
+    } catch { /* passive — never block */ }
   }
 
   async function hashImage(img) {

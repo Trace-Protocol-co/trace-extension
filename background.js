@@ -11,15 +11,34 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     sendResponse({ ok: true });
     return true;
   }
+
   if (message.type === "VERIFY_HASH") {
     handleVerify(message.hash, message.pageUrl, message.imgSrc).then(sendResponse);
     return true;
   }
+
   if (message.type === "HEALTH_CHECK") {
     fetch(API_URL + "/v1/health")
       .then(r => r.json())
       .then(d => sendResponse({ ok: true, registered: d.registered || 0 }))
       .catch(e => { console.error("Health check failed:", e); sendResponse({ ok: false }); });
+    return true;
+  }
+
+  // Passive bank encounter — routes through background to bypass page CSP
+  // News sites (BBC, Guardian) block fetch from content scripts
+  // Background service workers are NOT subject to page CSP
+  if (message.type === "BANK_ENCOUNTER") {
+    fetch(API_URL + "/v1/bank/encounter", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        url_hash:  message.url_hash,
+        source:    message.source,
+        verdict:   message.verdict || "UNKNOWN",
+        media_url: message.media_url,
+      }),
+    }).catch(() => {}); // passive — never fail
     return true;
   }
 });
@@ -30,7 +49,6 @@ async function handleVerify(hash, pageUrl, imgSrc) {
   if (hit && Date.now() - hit.ts < TTL) return hit.data;
 
   try {
-    // Try canvas hash first
     const res  = await fetch(API_URL + "/v1/search?hash=" + hash);
     const data = await res.json();
 
