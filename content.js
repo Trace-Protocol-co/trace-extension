@@ -211,6 +211,36 @@
       });
       if (result && result.verdict && result.verdict !== "ERROR") {
         injectBadge(img, result.verdict, result);
+
+        // Write result to chrome.storage so popup scan history updates
+        const verdictKey = {
+          VERIFIED_ORIGINAL: "verified",
+          MODIFIED:          "modified",
+          UNVERIFIED:        "unverified",
+          AI_GENERATED:      "ai_generated",
+        }[result.verdict];
+
+        chrome.storage.local.get(
+          ["verified","modified","unverified","ai_generated","recent_scans"],
+          items => {
+            // Increment verdict counter
+            const updated = {};
+            if (verdictKey) updated[verdictKey] = (items[verdictKey] || 0) + 1;
+
+            // Add to recent scans list (max 20)
+            const scans = items.recent_scans || [];
+            scans.unshift({
+              verdict:   result.verdict,
+              source:    new URL(window.location.href).hostname,
+              url:       img.currentSrc || img.src || "",
+              timestamp: Date.now(),
+              bank:      result.bank || null,
+            });
+            updated.recent_scans = scans.slice(0, 20);
+
+            chrome.storage.local.set(updated);
+          }
+        );
       }
     } catch { /* context invalidated */ }
   }
