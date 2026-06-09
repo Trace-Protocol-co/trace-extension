@@ -24,7 +24,11 @@
   // Defined first so it's available throughout the script
   async function writeBankSighting(img, verdict) {
     try {
-      const src = img.currentSrc || img.src || "";
+      // Try all possible src attributes — BBC uses data-src, data-bbc-width, etc.
+      const src = img.currentSrc || img.src
+        || img.getAttribute("data-src") || img.getAttribute("data-lazy")
+        || img.getAttribute("data-original") || img.getAttribute("data-bbc-width")
+        || img.getAttribute("srcset")?.split(" ")[0] || "";
       if (!src || src.startsWith("data:") || src.length < 10) return;
       const msgBuffer = new TextEncoder().encode(src);
       const hashBuffer = await crypto.subtle.digest("SHA-256", msgBuffer);
@@ -246,6 +250,10 @@
   }
 
   function tryProcess(img) {
+    // Write passive sighting immediately using any available src
+    // This catches lazy-loaded images before canvas access is possible
+    writeBankSighting(img, "UNKNOWN");
+    
     const { w, h } = getSize(img);
     if (img.complete && w >= MIN_SIZE && h >= MIN_SIZE) {
       processImage(img);
