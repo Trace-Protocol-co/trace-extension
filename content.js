@@ -6,6 +6,7 @@
   'use strict';
 
   const APP_URL = "https://www.traceprotocol.co";
+  const TRACE_API = "https://trace-cbvb.onrender.com";
 
   const BADGES = {
     VERIFIED_ORIGINAL: { emoji: "✓",  color: "#34d399", border: "#34d399", bg: "rgba(5,46,22,0.95)",   label: "VERIFIED"   },
@@ -18,6 +19,29 @@
 
   const processed = new WeakSet();
   const MIN_SIZE  = 100;
+
+  // ── Passive bank sighting — runs for every image encountered ─────────────────
+  // Defined first so it's available throughout the script
+  async function writeBankSighting(img, verdict) {
+    try {
+      const src = img.currentSrc || img.src || "";
+      if (!src || src.startsWith("data:") || src.length < 10) return;
+      const msgBuffer = new TextEncoder().encode(src);
+      const hashBuffer = await crypto.subtle.digest("SHA-256", msgBuffer);
+      const urlHash = Array.from(new Uint8Array(hashBuffer))
+        .map(b => b.toString(16).padStart(2, "0")).join("").slice(0, 32);
+      await fetch(TRACE_API + "/v1/bank/encounter", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          url_hash:  urlHash,
+          source:    window.location.hostname,
+          verdict:   verdict || "UNKNOWN",
+          media_url: src.slice(0, 200),
+        }),
+      });
+    } catch { /* passive — never block the badge */ }
+  }
 
   async function hashImage(img) {
     try {
@@ -48,7 +72,6 @@
     let container = img.parentElement;
     if (!container) return;
 
-    // Walk up to find a good container (figure, picture, article, or positioned)
     for (let i = 0; i < 4; i++) {
       const tag = container.tagName;
       const pos = getComputedStyle(container).position;
@@ -63,7 +86,6 @@
     const badge = document.createElement("div");
     badge.className = "trace-badge";
 
-    // Memory pulse indicator — shows MemWal read/write activity
     const pulse = info.bank && info.bank.contributed_to_bank
       ? '<span style="display:inline-block;width:5px;height:5px;border-radius:50%;background:#3b82f6;margin-right:4px;animation:trace-pulse 1.5s infinite"></span>'
       : "";
@@ -84,7 +106,6 @@
       : verdict === "AI_GENERATED" ? "AI-generated content detected"
       : cfg.label;
 
-    // Add pulse animation style once
     if (!document.getElementById("trace-pulse-style")) {
       const style = document.createElement("style");
       style.id = "trace-pulse-style";
@@ -92,7 +113,6 @@
       document.head.appendChild(style);
     }
 
-    // Click handler
     badge.addEventListener("click", (e) => {
       e.stopPropagation();
       if (info && info.mediaId) {
@@ -102,7 +122,6 @@
       }
     });
 
-    // Hover panel — 320px wide per PRD spec
     const panel = document.createElement("div");
     panel.style.cssText = [
       "display:none","position:absolute","top:22px","right:0","width:320px",
@@ -112,44 +131,28 @@
     ].join(";");
 
     const bank = info.bank || {};
-    const sightingCount = bank.sighting_count || bank.known_to_bank ? (bank.sighting_count || 1) : 0;
+    const sightingCount = bank.sighting_count || (bank.known_to_bank ? (bank.sighting_count || 1) : 0);
     const firstSeen = bank.first_seen ? new Date(bank.first_seen).toLocaleDateString() : null;
     const sources = Array.isArray(bank.sources) ? bank.sources : [];
     const spreadVelocity = sightingCount > 10 ? "HIGH" : sightingCount > 3 ? "MEDIUM" : "LOW";
     const velocityColor = sightingCount > 10 ? "#f43f5e" : sightingCount > 3 ? "#f59e0b" : "#34d399";
 
     const lines = [];
-
-    // Header
     lines.push('<div style="color:#fff;font-size:11px;font-weight:700;margin-bottom:10px;letter-spacing:.05em">TRACE PROTOCOL</div>');
-
-    // Verdict
     lines.push('<div style="display:flex;align-items:center;gap:6px;margin-bottom:8px">');
     lines.push('<div style="width:8px;height:8px;border-radius:50%;background:' + cfg.bg.replace('0.15','1') + '"></div>');
     lines.push('<span style="color:' + cfg.color + ';font-weight:700">' + verdict.replace(/_/g," ") + '</span>');
     lines.push('</div>');
-
-    // Confidence
     if (info.confidence !== undefined) {
       lines.push('<div style="margin-bottom:6px"><span style="color:#52525b">Confidence: </span><span style="color:#e4e4e7">' + Math.round(info.confidence * 100) + '%</span></div>');
     }
-
-    // Divider
     lines.push('<div style="border-top:1px solid #27272a;margin:8px 0"></div>');
-
-    // Collective Memory Bank section
     lines.push('<div style="color:#3b82f6;font-size:9px;letter-spacing:.1em;margin-bottom:6px">COLLECTIVE MEMORY BANK</div>');
     if (sightingCount > 0) {
       lines.push('<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-bottom:8px">');
-      lines.push('<div style="background:#18181b;border-radius:4px;padding:6px;text-align:center">');
-      lines.push('<div style="color:#fff;font-size:14px;font-weight:700">' + sightingCount + '</div>');
-      lines.push('<div style="color:#52525b;font-size:8px">SIGHTINGS</div></div>');
-      lines.push('<div style="background:#18181b;border-radius:4px;padding:6px;text-align:center">');
-      lines.push('<div style="color:#fff;font-size:9px">' + (firstSeen || "—") + '</div>');
-      lines.push('<div style="color:#52525b;font-size:8px">FIRST SEEN</div></div>');
-      lines.push('<div style="background:#18181b;border-radius:4px;padding:6px;text-align:center">');
-      lines.push('<div style="color:' + velocityColor + ';font-size:9px;font-weight:700">' + spreadVelocity + '</div>');
-      lines.push('<div style="color:#52525b;font-size:8px">SPREAD</div></div>');
+      lines.push('<div style="background:#18181b;border-radius:4px;padding:6px;text-align:center"><div style="color:#fff;font-size:14px;font-weight:700">' + sightingCount + '</div><div style="color:#52525b;font-size:8px">SIGHTINGS</div></div>');
+      lines.push('<div style="background:#18181b;border-radius:4px;padding:6px;text-align:center"><div style="color:#fff;font-size:9px">' + (firstSeen || "—") + '</div><div style="color:#52525b;font-size:8px">FIRST SEEN</div></div>');
+      lines.push('<div style="background:#18181b;border-radius:4px;padding:6px;text-align:center"><div style="color:' + velocityColor + ';font-size:9px;font-weight:700">' + spreadVelocity + '</div><div style="color:#52525b;font-size:8px">SPREAD</div></div>');
       lines.push('</div>');
       if (sources.length > 0) {
         lines.push('<div style="margin-bottom:6px"><span style="color:#52525b">Sources: </span><span style="color:#a1a1aa">' + sources.join(", ") + '</span></div>');
@@ -157,24 +160,18 @@
     } else {
       lines.push('<div style="color:#52525b;margin-bottom:8px">First encounter — sighting recorded to bank</div>');
     }
-
-    // On-chain provenance
     if (info.origin || info.mediaId) {
       lines.push('<div style="border-top:1px solid #27272a;margin:8px 0"></div>');
       lines.push('<div style="color:#34d399;font-size:9px;letter-spacing:.1em;margin-bottom:6px">ON-CHAIN PROVENANCE</div>');
-      if (info.origin?.creator)   lines.push('<div><span style="color:#52525b">Creator: </span><span style="color:#06b6d4">' + String(info.origin.creator).slice(0,20) + "…</span></div>");
+      if (info.origin?.creator) lines.push('<div><span style="color:#52525b">Creator: </span><span style="color:#06b6d4">' + String(info.origin.creator).slice(0,20) + "…</span></div>");
       if (info.origin?.first_seen) lines.push('<div><span style="color:#52525b">Registered: </span><span style="color:#e4e4e7">' + new Date(info.origin.first_seen).toLocaleDateString() + "</span></div>");
       if (info.provenance_chain?.length > 0) lines.push('<div><span style="color:#52525b">Chain depth: </span><span style="color:#e4e4e7">' + info.provenance_chain.length + "</span></div>");
     }
-
-    // Footer links
     lines.push('<div style="border-top:1px solid #27272a;margin:8px 0"></div>');
     lines.push('<div style="display:flex;gap:8px">');
     if (info.mediaId) lines.push('<a href="' + APP_URL + '/graph/' + info.mediaId + '" target="_blank" style="color:#34d399;text-decoration:none;font-size:9px">View Provenance →</a>');
     lines.push('<a href="' + APP_URL + '/bank" target="_blank" style="color:#3b82f6;text-decoration:none;font-size:9px">Memory Bank →</a>');
     lines.push('</div>');
-
-    // MemWal indicator
     lines.push('<div style="margin-top:8px;display:flex;align-items:center;gap:4px">');
     lines.push('<div style="width:4px;height:4px;border-radius:50%;background:#3b82f6;animation:trace-pulse 1.5s infinite"></div>');
     lines.push('<span style="color:#3b82f6;font-size:8px">MemWal · Walrus</span>');
@@ -184,7 +181,6 @@
     badge.appendChild(panel);
     badge.addEventListener("mouseenter", () => { panel.style.display = "block"; });
     badge.addEventListener("mouseleave", () => { panel.style.display = "none"; });
-
     container.appendChild(badge);
   }
 
@@ -199,6 +195,9 @@
     processed.add(img);
     injectBadge(img, "UNKNOWN");
 
+    // Write passive sighting immediately — bank grows on every page browse
+    writeBankSighting(img, "UNKNOWN");
+
     const hash = await hashImage(img);
     if (!hash) return;
 
@@ -210,13 +209,14 @@
         imgSrc: img.currentSrc || img.src || "",
       });
 
-      // Write passive sighting to bank for every image encountered
-      writeBankSighting(img, result?.verdict || "UNKNOWN", result);
+      // Update bank sighting with actual verdict after API returns
+      if (result?.verdict && result.verdict !== "UNKNOWN") {
+        writeBankSighting(img, result.verdict);
+      }
 
       if (result && result.verdict && result.verdict !== "ERROR") {
         injectBadge(img, result.verdict, result);
 
-        // Write result to chrome.storage so popup scan history updates
         const verdictKey = {
           VERIFIED_ORIGINAL: "verified",
           MODIFIED:          "modified",
@@ -227,11 +227,8 @@
         chrome.storage.local.get(
           ["verified","modified","unverified","ai_generated","recent_scans"],
           items => {
-            // Increment verdict counter
             const updated = {};
             if (verdictKey) updated[verdictKey] = (items[verdictKey] || 0) + 1;
-
-            // Add to recent scans list (max 20)
             const scans = items.recent_scans || [];
             scans.unshift({
               verdict:   result.verdict,
@@ -241,7 +238,6 @@
               bank:      result.bank || null,
             });
             updated.recent_scans = scans.slice(0, 20);
-
             chrome.storage.local.set(updated);
           }
         );
@@ -258,7 +254,6 @@
     }
   }
 
-  // Watch for lazy-load attribute swaps (data-src, data-lazy, etc.)
   function watchLazy(img) {
     const obs = new MutationObserver(() => {
       const { w, h } = getSize(img);
@@ -267,48 +262,23 @@
     obs.observe(img, { attributes: true, attributeFilter: ["src","srcset","data-src","data-lazy","data-original","data-bbc-width"] });
   }
 
-  // Respect the toggle — check if enabled before scanning
   let traceEnabled = true;
   chrome.storage.local.get("trace_enabled", items => {
     traceEnabled = items.trace_enabled !== false;
     if (traceEnabled) { document.querySelectorAll("img").forEach(img => { tryProcess(img); watchLazy(img); }); }
   });
 
-  // Listen for toggle changes from popup
   chrome.runtime.onMessage.addListener((msg) => {
     if (msg.type === "SET_ENABLED") {
       traceEnabled = msg.enabled;
       if (!traceEnabled) {
-        // Remove all badges
         document.querySelectorAll(".trace-badge").forEach(b => b.remove());
       } else {
-        // Re-scan
         document.querySelectorAll("img").forEach(img => { tryProcess(img); watchLazy(img); });
       }
     }
   });
 
-  async function writeBankSighting(img, verdict, info) {
-  try {
-    const src = img.currentSrc || img.src || "";
-    if (!src || src.startsWith("data:") || src.length < 10) return;
-    const msgBuffer = new TextEncoder().encode(src);
-    const hashBuffer = await crypto.subtle.digest("SHA-256", msgBuffer);
-    const urlHash = Array.from(new Uint8Array(hashBuffer))
-      .map(b => b.toString(16).padStart(2, "0")).join("").slice(0, 32);
-    await fetch(API_URL + "/v1/bank/encounter", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        url_hash: urlHash, source: window.location.hostname,
-        verdict: verdict || "UNKNOWN",
-        media_url: src.slice(0, 200),
-      }),
-    });
-  } catch { /* passive — never block */ }
-}
-
-  // Watch for new images (infinite scroll, dynamic content)
   new MutationObserver(mutations => {
     mutations.forEach(m => {
       m.addedNodes.forEach(node => {
