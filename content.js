@@ -209,6 +209,10 @@
         pageUrl: window.location.href,
         imgSrc: img.currentSrc || img.src || "",
       });
+
+      // Write passive sighting to bank for every image encountered
+      writeBankSighting(img, result?.verdict || "UNKNOWN", result);
+
       if (result && result.verdict && result.verdict !== "ERROR") {
         injectBadge(img, result.verdict, result);
 
@@ -283,6 +287,26 @@
       }
     }
   });
+
+  async function writeBankSighting(img, verdict, info) {
+  try {
+    const src = img.currentSrc || img.src || "";
+    if (!src || src.startsWith("data:") || src.length < 10) return;
+    const msgBuffer = new TextEncoder().encode(src);
+    const hashBuffer = await crypto.subtle.digest("SHA-256", msgBuffer);
+    const urlHash = Array.from(new Uint8Array(hashBuffer))
+      .map(b => b.toString(16).padStart(2, "0")).join("").slice(0, 32);
+    await fetch(API_URL + "/v1/bank/encounter", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        url_hash: urlHash, source: window.location.hostname,
+        verdict: verdict || "UNKNOWN",
+        media_url: src.slice(0, 200),
+      }),
+    });
+  } catch { /* passive — never block */ }
+}
 
   // Watch for new images (infinite scroll, dynamic content)
   new MutationObserver(mutations => {
