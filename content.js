@@ -97,12 +97,13 @@
       @keyframes trace-pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
       @keyframes trace-fade-in { from{opacity:0;transform:translateY(-4px)} to{opacity:1;transform:translateY(0)} }
       .trace-badge {
-        opacity: 0.85;
+        opacity: 0;
         transition: opacity 0.2s ease, transform 0.15s ease;
+        pointer-events: none;
       }
       .trace-img-wrapper:hover .trace-badge {
         opacity: 1 !important;
-        transform: scale(1.1);
+        pointer-events: auto !important;
       }
       .trace-badge:hover {
         opacity: 1 !important;
