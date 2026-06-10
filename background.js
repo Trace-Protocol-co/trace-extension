@@ -40,7 +40,26 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     return true;
   }
 
+  // Fetch image bytes and compute content hash — bypasses canvas CSP restrictions
+  if (message.type === "HASH_IMAGE_URL") {
+    fetchAndHashImage(message.imgUrl).then(hash => sendResponse({ hash }));
+    return true;
+  }
+
 });
+
+async function fetchAndHashImage(url) {
+  try {
+    const res = await fetch(url, { mode: "cors", credentials: "omit" });
+    if (!res.ok) return null;
+    const buf = await res.arrayBuffer();
+    const hashBuf = await crypto.subtle.digest("SHA-256", buf);
+    return Array.from(new Uint8Array(hashBuf))
+      .map(b => b.toString(16).padStart(2, "0")).join("");
+  } catch {
+    return null;
+  }
+}
 
 async function handleVerify(hash, pageUrl, imgSrc) {
   const cacheKey = hash + (imgSrc || "");

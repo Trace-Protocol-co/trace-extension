@@ -282,8 +282,22 @@
 
     processed.add(img);
 
-    // Try canvas hash first, fall back to URL hash for CSP-restricted sites
+    // Strategy: try canvas hash first (fastest), then content fetch via background
+    // (works on CSP-restricted sites), finally URL hash as last resort
     let hash = await hashImage(img);
+    if (!hash) {
+      // Canvas blocked — ask background to fetch and hash the actual bytes
+      const src = img.currentSrc || img.src || img.getAttribute("data-src") || "";
+      if (src) {
+        try {
+          const result = await chrome.runtime.sendMessage({
+            type: "HASH_IMAGE_URL",
+            imgUrl: src,
+          });
+          if (result?.hash) hash = result.hash;
+        } catch { /* fall through */ }
+      }
+    }
     if (!hash) hash = await urlHash(img);
     if (!hash) return;
 
