@@ -1,28 +1,43 @@
 /**
  * TRACE Extension — Content Script
- * Handles lazy-loaded images, BBC/news sites, attribute-based lazy loaders
+ * - Circular shield badges (hover only)
+ * - Works on Twitter/X, BBC, Guardian, all public sites
+ * - Re-verifies on page revisit (no stale UNKNOWN after manual verify)
  */
 (function () {
   'use strict';
 
-  const APP_URL = "https://www.traceprotocol.co";
+  const APP_URL   = "https://www.traceprotocol.co";
   const TRACE_API = "https://trace-cbvb.onrender.com";
 
   const BADGES = {
-    VERIFIED_ORIGINAL: { emoji: "✓",  color: "#34d399", border: "#34d399", bg: "rgba(5,46,22,0.95)",   label: "VERIFIED"   },
-    MODIFIED:          { emoji: "~",  color: "#fbbf24", border: "#fbbf24", bg: "rgba(28,20,2,0.95)",   label: "MODIFIED"   },
-    UNVERIFIED:        { emoji: "?",  color: "#f43f5e", border: "#f43f5e", bg: "rgba(28,1,7,0.95)",    label: "UNVERIFIED" },
-    AI_GENERATED:      { emoji: "AI", color: "#a78bfa", border: "#a78bfa", bg: "rgba(18,10,30,0.95)",  label: "AI GEN"     },
-    REVOKED:           { emoji: "✕",  color: "#f43f5e", border: "#f43f5e", bg: "rgba(28,1,7,0.95)",    label: "REVOKED"    },
-    UNKNOWN:           { emoji: "○",  color: "#71717a", border: "#3f3f46", bg: "rgba(10,10,10,0.9)",   label: "UNKNOWN"    },
+    VERIFIED_ORIGINAL: { color: "#fff", bg: "#10b981", border: "#10b981", label: "VERIFIED",   icon: "shield-check" },
+    MODIFIED:          { color: "#fff", bg: "#f59e0b", border: "#f59e0b", label: "MODIFIED",   icon: "shield-alert" },
+    UNVERIFIED:        { color: "#fff", bg: "#ef4444", border: "#ef4444", label: "UNVERIFIED", icon: "shield-x" },
+    AI_GENERATED:      { color: "#fff", bg: "#8b5cf6", border: "#8b5cf6", label: "AI GEN",     icon: "sparkles" },
+    REVOKED:           { color: "#fff", bg: "#ef4444", border: "#ef4444", label: "REVOKED",    icon: "shield-x" },
+    UNKNOWN:           { color: "#fff", bg: "#3b82f6", border: "#3b82f6", label: "UNKNOWN",    icon: "shield" },
+  };
+
+  const SHIELD_PATHS = {
+    "shield":       'M12 2 4 5v6c0 5 3 9 8 11 5-2 8-6 8-11V5l-8-3z',
+    "shield-check": 'M12 2 4 5v6c0 5 3 9 8 11 5-2 8-6 8-11V5l-8-3zm-1 13L7 11l1.4-1.4L11 12.2l4.6-4.6L17 9l-6 6z',
+    "shield-alert": 'M12 2 4 5v6c0 5 3 9 8 11 5-2 8-6 8-11V5l-8-3zm0 6v4m0 2v.01',
+    "shield-x":     'M12 2 4 5v6c0 5 3 9 8 11 5-2 8-6 8-11V5l-8-3zM9 9l6 6m0-6-6 6',
+    "sparkles":     'M12 3l1.5 4.5L18 9l-4.5 1.5L12 15l-1.5-4.5L6 9l4.5-1.5L12 3z',
   };
 
   const processed = new WeakSet();
   const MIN_SIZE  = 100;
+  const verdictCache = new Map(); // hash -> verdict (survives page reloads via storage)
 
-  // ── Passive bank sighting — runs for every image encountered ─────────────────
-  // Defined first so it's available throughout the script
-  // Route through background service worker to bypass CSP restrictions on news sites
+  // Load cached verdicts from chrome.storage on init
+  chrome.storage.local.get("verdict_cache", items => {
+    const cached = items.verdict_cache || {};
+    Object.entries(cached).forEach(([h, v]) => verdictCache.set(h, v));
+  });
+
+  // ── Passive bank sighting (routes through background to bypass CSP) ──────────
   async function writeBankSighting(img, verdict) {
     try {
       const src = img.currentSrc || img.src
@@ -30,11 +45,10 @@
         || img.getAttribute("data-original") || img.getAttribute("data-bbc-width")
         || img.getAttribute("srcset")?.split(" ")[0] || "";
       if (!src || src.startsWith("data:") || src.length < 10) return;
-      const msgBuffer = new TextEncoder().encode(src);
+      const msgBuffer  = new TextEncoder().encode(src);
       const hashBuffer = await crypto.subtle.digest("SHA-256", msgBuffer);
       const urlHash = Array.from(new Uint8Array(hashBuffer))
         .map(b => b.toString(16).padStart(2, "0")).join("").slice(0, 32);
-      // Send to background — background scripts are not subject to page CSP
       chrome.runtime.sendMessage({
         type: "BANK_ENCOUNTER",
         url_hash:  urlHash,
@@ -42,7 +56,7 @@
         verdict:   verdict || "UNKNOWN",
         media_url: src.slice(0, 200),
       });
-    } catch { /* passive — never block */ }
+    } catch { /* passive */ }
   }
 
   async function hashImage(img) {
@@ -56,8 +70,16 @@
       ctx.drawImage(img, 0, 0, w, h);
       const data = ctx.getImageData(0, 0, w, h).data;
       const hash = await crypto.subtle.digest("SHA-256", data.buffer);
-      return Array.from(new Uint8Array(hash)).map(b => b.toString(16).padStart(2,"0")).join("");
+      return Array.from(new Uint8Array(hash)).map(b => b.toString(16).padStart(2, "0")).join("");
     } catch { return null; }
+  }
+
+  // Fallback hash from image URL when canvas blocked (BBC, Twitter, etc)
+  async function urlHash(img) {
+    const src = img.currentSrc || img.src || img.getAttribute("data-src") || "";
+    if (!src) return null;
+    const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(src));
+    return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, "0")).join("");
   }
 
   function getSize(img) {
@@ -65,6 +87,31 @@
       w: img.naturalWidth  || img.width  || img.offsetWidth  || 0,
       h: img.naturalHeight || img.height || img.offsetHeight || 0,
     };
+  }
+
+  function ensurePulseStyle() {
+    if (document.getElementById("trace-pulse-style")) return;
+    const style = document.createElement("style");
+    style.id = "trace-pulse-style";
+    style.textContent = `
+      @keyframes trace-pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
+      @keyframes trace-fade-in { from{opacity:0;transform:translateY(-4px)} to{opacity:1;transform:translateY(0)} }
+      .trace-badge {
+        opacity: 0.85;
+        transition: opacity 0.2s ease, transform 0.15s ease;
+      }
+      .trace-img-wrapper:hover .trace-badge {
+        opacity: 1 !important;
+        transform: scale(1.1);
+      }
+      .trace-badge:hover {
+        opacity: 1 !important;
+        transform: scale(1.15) !important;
+      }
+      .trace-badge-panel { animation: trace-fade-in 0.15s ease; }
+      .trace-badge-panel a:hover { text-decoration: underline !important; }
+    `;
+    document.head.appendChild(style);
   }
 
   function injectBadge(img, verdict, info) {
@@ -83,175 +130,206 @@
     }
 
     container.querySelectorAll(".trace-badge").forEach(b => b.remove());
+    container.classList.add("trace-img-wrapper");
     if (getComputedStyle(container).position === "static") container.style.position = "relative";
+
+    ensurePulseStyle();
 
     const badge = document.createElement("div");
     badge.className = "trace-badge";
-
-    const pulse = info.bank && info.bank.contributed_to_bank
-      ? '<span style="display:inline-block;width:5px;height:5px;border-radius:50%;background:#3b82f6;margin-right:4px;animation:trace-pulse 1.5s infinite"></span>'
-      : "";
-
     badge.style.cssText = [
-      "position:absolute","top:6px","right:6px","z-index:2147483647",
-      "display:flex","align-items:center","gap:3px",
-      "background:" + cfg.bg, "border:1px solid " + cfg.border,
-      "color:" + cfg.color, "font-family:'Courier New',monospace",
-      "font-size:9px","font-weight:700","letter-spacing:.1em",
-      "padding:3px 7px","border-radius:3px","cursor:pointer","pointer-events:auto",
+      "position:absolute","top:10px","right:10px","z-index:2147483647",
+      "width:36px","height:36px","border-radius:50%",
+      "display:flex","align-items:center","justify-content:center",
+      "background:" + cfg.bg,
+      "border:2px solid #fff",
+      "color:" + cfg.color,
+      "cursor:pointer","pointer-events:auto",
+      "box-shadow:0 4px 12px rgba(0,0,0,0.5), 0 0 0 1px " + cfg.border + ", 0 0 20px " + cfg.border + "60",
+      "transition:transform 0.15s ease",
     ].join(";");
-    badge.innerHTML = pulse + cfg.emoji + " " + cfg.label;
-    badge.title = verdict === "UNKNOWN"
-      ? "Not in TRACE registry — click to verify this media"
-      : verdict === "VERIFIED_ORIGINAL" ? "Click to view provenance on TRACE"
-      : verdict === "MODIFIED" ? "Click to view edit history on TRACE"
-      : verdict === "AI_GENERATED" ? "AI-generated content detected"
-      : cfg.label;
 
-    if (!document.getElementById("trace-pulse-style")) {
-      const style = document.createElement("style");
-      style.id = "trace-pulse-style";
-      style.textContent = "@keyframes trace-pulse{0%,100%{opacity:1}50%{opacity:.3}}";
-      document.head.appendChild(style);
-    }
+    badge.innerHTML = `
+      <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24"
+        fill="none" stroke="#fff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+        <path d="${SHIELD_PATHS[cfg.icon]}"/>
+      </svg>
+    `;
+
+    badge.title = `TRACE: ${cfg.label} — hover for details`;
 
     badge.addEventListener("click", (e) => {
       e.stopPropagation();
-      if (info && info.mediaId) {
-        window.open(APP_URL + "/graph/" + info.mediaId, "_blank");
-      } else if (verdict === "UNKNOWN") {
-        window.open(APP_URL + "/verify", "_blank");
-      }
+      e.preventDefault();
+      if (info && info.mediaId) window.open(APP_URL + "/graph/" + info.mediaId, "_blank");
+      else if (verdict === "UNKNOWN") window.open(APP_URL + "/verify", "_blank");
     });
 
+    // Hover panel
     const panel = document.createElement("div");
+    panel.className = "trace-badge-panel";
     panel.style.cssText = [
-      "display:none","position:absolute","top:22px","right:0","width:320px",
-      "background:#09090b","border:1px solid #27272a","border-radius:8px",
-      "padding:14px","font-family:'Courier New',monospace","font-size:10px",
+      "display:none","position:absolute","top:36px","right:0","width:300px",
+      "background:#09090b","border:1px solid #27272a","border-radius:10px",
+      "padding:14px","font-family:-apple-system,'Segoe UI',sans-serif","font-size:11px",
       "color:#a1a1aa","z-index:2147483647","box-shadow:0 8px 32px rgba(0,0,0,.9)",
+      "pointer-events:auto",
     ].join(";");
 
-    const bank = info.bank || {};
-    const sightingCount = bank.sighting_count || (bank.known_to_bank ? (bank.sighting_count || 1) : 0);
-    const firstSeen = bank.first_seen ? new Date(bank.first_seen).toLocaleDateString() : null;
-    const sources = Array.isArray(bank.sources) ? bank.sources : [];
-    const spreadVelocity = sightingCount > 10 ? "HIGH" : sightingCount > 3 ? "MEDIUM" : "LOW";
-    const velocityColor = sightingCount > 10 ? "#f43f5e" : sightingCount > 3 ? "#f59e0b" : "#34d399";
+    const bank          = info.bank || {};
+    const sightingCount = bank.sighting_count || 0;
+    const firstSeen     = bank.first_seen ? new Date(bank.first_seen).toLocaleDateString() : null;
+    const sources       = Array.isArray(bank.sources) ? bank.sources : [];
+    const spread = sightingCount > 100 ? "VIRAL"
+                 : sightingCount > 10  ? "HIGH"
+                 : sightingCount > 3   ? "MEDIUM" : "LOW";
+    const spreadColor = sightingCount > 100 ? "#f43f5e"
+                      : sightingCount > 10  ? "#fbbf24"
+                      : sightingCount > 3   ? "#fb923c" : "#34d399";
 
-    const lines = [];
-    lines.push('<div style="color:#fff;font-size:11px;font-weight:700;margin-bottom:10px;letter-spacing:.05em">TRACE PROTOCOL</div>');
-    lines.push('<div style="display:flex;align-items:center;gap:6px;margin-bottom:8px">');
-    lines.push('<div style="width:8px;height:8px;border-radius:50%;background:' + cfg.bg.replace('0.15','1') + '"></div>');
-    lines.push('<span style="color:' + cfg.color + ';font-weight:700">' + verdict.replace(/_/g," ") + '</span>');
-    lines.push('</div>');
-    if (info.confidence !== undefined) {
-      lines.push('<div style="margin-bottom:6px"><span style="color:#52525b">Confidence: </span><span style="color:#e4e4e7">' + Math.round(info.confidence * 100) + '%</span></div>');
-    }
-    lines.push('<div style="border-top:1px solid #27272a;margin:8px 0"></div>');
-    lines.push('<div style="color:#3b82f6;font-size:9px;letter-spacing:.1em;margin-bottom:6px">COLLECTIVE MEMORY BANK</div>');
-    if (sightingCount > 0) {
-      lines.push('<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-bottom:8px">');
-      lines.push('<div style="background:#18181b;border-radius:4px;padding:6px;text-align:center"><div style="color:#fff;font-size:14px;font-weight:700">' + sightingCount + '</div><div style="color:#52525b;font-size:8px">SIGHTINGS</div></div>');
-      lines.push('<div style="background:#18181b;border-radius:4px;padding:6px;text-align:center"><div style="color:#fff;font-size:9px">' + (firstSeen || "—") + '</div><div style="color:#52525b;font-size:8px">FIRST SEEN</div></div>');
-      lines.push('<div style="background:#18181b;border-radius:4px;padding:6px;text-align:center"><div style="color:' + velocityColor + ';font-size:9px;font-weight:700">' + spreadVelocity + '</div><div style="color:#52525b;font-size:8px">SPREAD</div></div>');
-      lines.push('</div>');
-      if (sources.length > 0) {
-        lines.push('<div style="margin-bottom:6px"><span style="color:#52525b">Sources: </span><span style="color:#a1a1aa">' + sources.join(", ") + '</span></div>');
-      }
-    } else {
-      lines.push('<div style="color:#52525b;margin-bottom:8px">First encounter — sighting recorded to bank</div>');
-    }
-    if (info.origin || info.mediaId) {
-      lines.push('<div style="border-top:1px solid #27272a;margin:8px 0"></div>');
-      lines.push('<div style="color:#34d399;font-size:9px;letter-spacing:.1em;margin-bottom:6px">ON-CHAIN PROVENANCE</div>');
-      if (info.origin?.creator) lines.push('<div><span style="color:#52525b">Creator: </span><span style="color:#06b6d4">' + String(info.origin.creator).slice(0,20) + "…</span></div>");
-      if (info.origin?.first_seen) lines.push('<div><span style="color:#52525b">Registered: </span><span style="color:#e4e4e7">' + new Date(info.origin.first_seen).toLocaleDateString() + "</span></div>");
-      if (info.provenance_chain?.length > 0) lines.push('<div><span style="color:#52525b">Chain depth: </span><span style="color:#e4e4e7">' + info.provenance_chain.length + "</span></div>");
-    }
-    lines.push('<div style="border-top:1px solid #27272a;margin:8px 0"></div>');
-    lines.push('<div style="display:flex;gap:8px">');
-    if (info.mediaId) lines.push('<a href="' + APP_URL + '/graph/' + info.mediaId + '" target="_blank" style="color:#34d399;text-decoration:none;font-size:9px">View Provenance →</a>');
-    lines.push('<a href="' + APP_URL + '/bank" target="_blank" style="color:#3b82f6;text-decoration:none;font-size:9px">Memory Bank →</a>');
-    lines.push('</div>');
-    lines.push('<div style="margin-top:8px;display:flex;align-items:center;gap:4px">');
-    lines.push('<div style="width:4px;height:4px;border-radius:50%;background:#3b82f6;animation:trace-pulse 1.5s infinite"></div>');
-    lines.push('<span style="color:#3b82f6;font-size:8px">MemWal · Walrus</span>');
-    lines.push('</div>');
+    panel.innerHTML = `
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+        <span style="color:#fff;font-size:11px;font-weight:700;letter-spacing:.08em">TRACE PROTOCOL</span>
+        <span style="display:flex;align-items:center;gap:4px">
+          <span style="width:6px;height:6px;border-radius:50%;background:${cfg.color}"></span>
+          <span style="color:${cfg.color};font-weight:700;font-size:10px">${cfg.label}</span>
+        </span>
+      </div>
 
-    panel.innerHTML = lines.join("");
+      ${info.confidence !== undefined ? `
+        <div style="margin-bottom:8px;font-size:10px">
+          <span style="color:#52525b">Confidence: </span>
+          <span style="color:#e4e4e7;font-weight:600">${Math.round(info.confidence * 100)}%</span>
+        </div>` : ""}
+
+      <div style="border-top:1px solid #27272a;margin:10px 0"></div>
+      <div style="color:#3b82f6;font-size:9px;letter-spacing:.1em;margin-bottom:8px;font-weight:600">COLLECTIVE MEMORY BANK</div>
+
+      ${sightingCount > 0 ? `
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-bottom:10px">
+          <div style="background:#18181b;border-radius:6px;padding:8px 4px;text-align:center">
+            <div style="color:#fff;font-size:15px;font-weight:700">${sightingCount.toLocaleString()}</div>
+            <div style="color:#52525b;font-size:8px;margin-top:2px">SIGHTINGS</div>
+          </div>
+          <div style="background:#18181b;border-radius:6px;padding:8px 4px;text-align:center">
+            <div style="color:#fff;font-size:9px;font-weight:600;margin-top:3px">${firstSeen || "—"}</div>
+            <div style="color:#52525b;font-size:8px;margin-top:2px">FIRST SEEN</div>
+          </div>
+          <div style="background:#18181b;border-radius:6px;padding:8px 4px;text-align:center">
+            <div style="color:${spreadColor};font-size:10px;font-weight:700;margin-top:2px">${spread}</div>
+            <div style="color:#52525b;font-size:8px;margin-top:2px">SPREAD</div>
+          </div>
+        </div>
+        ${sources.length > 0 ? `
+          <div style="margin-bottom:8px;font-size:10px">
+            <span style="color:#52525b">Sources: </span>
+            <span style="color:#a1a1aa">${sources.slice(0, 3).join(", ")}</span>
+          </div>` : ""}
+      ` : `
+        <div style="color:#52525b;margin-bottom:10px;font-size:10px">First encounter — sighting recorded</div>
+      `}
+
+      ${(info.origin || info.mediaId) ? `
+        <div style="border-top:1px solid #27272a;margin:10px 0"></div>
+        <div style="color:#34d399;font-size:9px;letter-spacing:.1em;margin-bottom:8px;font-weight:600">ON-CHAIN PROVENANCE</div>
+        ${info.origin?.creator ? `<div style="margin-bottom:4px;font-size:10px"><span style="color:#52525b">Creator: </span><span style="color:#06b6d4;font-family:monospace">${String(info.origin.creator).slice(0,18)}…</span></div>` : ""}
+        ${info.origin?.first_seen ? `<div style="margin-bottom:4px;font-size:10px"><span style="color:#52525b">Registered: </span><span style="color:#e4e4e7">${new Date(info.origin.first_seen).toLocaleDateString()}</span></div>` : ""}
+      ` : ""}
+
+      <div style="border-top:1px solid #27272a;margin:10px 0"></div>
+      <div style="display:flex;gap:10px;font-size:10px">
+        ${info.mediaId ? `<a href="${APP_URL}/graph/${info.mediaId}" target="_blank" style="color:#34d399;text-decoration:none;font-weight:600">Provenance →</a>` : ""}
+        <a href="${APP_URL}/bank" target="_blank" style="color:#3b82f6;text-decoration:none;font-weight:600">Memory Bank →</a>
+        ${verdict === "UNKNOWN" ? `<a href="${APP_URL}/verify" target="_blank" style="color:#fbbf24;text-decoration:none;font-weight:600;margin-left:auto">Verify ↗</a>` : ""}
+      </div>
+
+      <div style="margin-top:10px;display:flex;align-items:center;gap:5px">
+        <div style="width:4px;height:4px;border-radius:50%;background:#3b82f6;animation:trace-pulse 1.5s infinite"></div>
+        <span style="color:#3b82f6;font-size:8px;letter-spacing:.05em">MemWal · Walrus</span>
+      </div>
+    `;
+
     badge.appendChild(panel);
-    badge.addEventListener("mouseenter", () => { panel.style.display = "block"; });
-    badge.addEventListener("mouseleave", () => { panel.style.display = "none"; });
+
+    // Sticky hover — panel stays open with grace period so user can move mouse to it
+    let hideTimer = null;
+    const showPanel = () => {
+      if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; }
+      panel.style.display = "block";
+    };
+    const queueHide = () => {
+      hideTimer = setTimeout(() => { panel.style.display = "none"; hideTimer = null; }, 300);
+    };
+
+    badge.addEventListener("mouseenter", showPanel);
+    badge.addEventListener("mouseleave", queueHide);
+    panel.addEventListener("mouseenter", showPanel);
+    panel.addEventListener("mouseleave", queueHide);
+
     container.appendChild(badge);
   }
 
   async function processImage(img) {
     if (!traceEnabled) return;
     if (processed.has(img)) return;
+
     const { w, h } = getSize(img);
     if (w < MIN_SIZE || h < MIN_SIZE) return;
+
     const src = img.currentSrc || img.src || "";
     if (!src || src.startsWith("data:") || src.includes(".svg")) return;
 
     processed.add(img);
-    injectBadge(img, "UNKNOWN");
 
-    // Write passive sighting immediately — bank grows on every page browse
-    writeBankSighting(img, "UNKNOWN");
-
-    const hash = await hashImage(img);
+    // Try canvas hash first, fall back to URL hash for CSP-restricted sites
+    let hash = await hashImage(img);
+    if (!hash) hash = await urlHash(img);
     if (!hash) return;
+
+    // Check local cache first — if we verified this image before, show that verdict
+    const cachedVerdict = verdictCache.get(hash);
+    if (cachedVerdict && cachedVerdict.verdict !== "UNKNOWN") {
+      injectBadge(img, cachedVerdict.verdict, cachedVerdict);
+      writeBankSighting(img, cachedVerdict.verdict);
+      return;
+    }
+
+    // Inject badge with last known state (or UNKNOWN as placeholder)
+    injectBadge(img, cachedVerdict?.verdict || "UNKNOWN", cachedVerdict || {});
+    writeBankSighting(img, "UNKNOWN");
 
     try {
       const result = await chrome.runtime.sendMessage({
         type: "VERIFY_HASH",
         hash,
         pageUrl: window.location.href,
-        imgSrc: img.currentSrc || img.src || "",
+        imgSrc: src,
       });
 
-      // Update bank sighting with actual verdict after API returns
-      if (result?.verdict && result.verdict !== "UNKNOWN") {
-        writeBankSighting(img, result.verdict);
-      }
-
       if (result && result.verdict && result.verdict !== "ERROR") {
+        // Cache verdict for next visit
+        verdictCache.set(hash, result);
+        chrome.storage.local.get("verdict_cache", items => {
+          const cache = items.verdict_cache || {};
+          cache[hash] = result;
+          // Keep cache size manageable (last 500 hashes)
+          const keys = Object.keys(cache);
+          if (keys.length > 500) {
+            keys.slice(0, keys.length - 500).forEach(k => delete cache[k]);
+          }
+          chrome.storage.local.set({ verdict_cache: cache });
+        });
+
         injectBadge(img, result.verdict, result);
 
-        const verdictKey = {
-          VERIFIED_ORIGINAL: "verified",
-          MODIFIED:          "modified",
-          UNVERIFIED:        "unverified",
-          AI_GENERATED:      "ai_generated",
-        }[result.verdict];
-
-        chrome.storage.local.get(
-          ["verified","modified","unverified","ai_generated","recent_scans"],
-          items => {
-            const updated = {};
-            if (verdictKey) updated[verdictKey] = (items[verdictKey] || 0) + 1;
-            const scans = items.recent_scans || [];
-            scans.unshift({
-              verdict:   result.verdict,
-              source:    new URL(window.location.href).hostname,
-              url:       img.currentSrc || img.src || "",
-              timestamp: Date.now(),
-              bank:      result.bank || null,
-            });
-            updated.recent_scans = scans.slice(0, 20);
-            chrome.storage.local.set(updated);
-          }
-        );
+        if (result.verdict !== "UNKNOWN") {
+          writeBankSighting(img, result.verdict);
+        }
       }
     } catch { /* context invalidated */ }
   }
 
   function tryProcess(img) {
-    // Write passive sighting immediately using any available src
-    // This catches lazy-loaded images before canvas access is possible
-    writeBankSighting(img, "UNKNOWN");
-    
     const { w, h } = getSize(img);
     if (img.complete && w >= MIN_SIZE && h >= MIN_SIZE) {
       processImage(img);
@@ -271,7 +349,9 @@
   let traceEnabled = true;
   chrome.storage.local.get("trace_enabled", items => {
     traceEnabled = items.trace_enabled !== false;
-    if (traceEnabled) { document.querySelectorAll("img").forEach(img => { tryProcess(img); watchLazy(img); }); }
+    if (traceEnabled) {
+      document.querySelectorAll("img").forEach(img => { tryProcess(img); watchLazy(img); });
+    }
   });
 
   chrome.runtime.onMessage.addListener((msg) => {
@@ -282,6 +362,11 @@
       } else {
         document.querySelectorAll("img").forEach(img => { tryProcess(img); watchLazy(img); });
       }
+    }
+    // Invalidate cache when user manually verifies (refreshes verdicts on next visit)
+    if (msg.type === "INVALIDATE_CACHE") {
+      verdictCache.clear();
+      chrome.storage.local.remove("verdict_cache");
     }
   });
 
