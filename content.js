@@ -11,12 +11,12 @@
   const TRACE_API = "https://trace-cbvb.onrender.com";
 
   const BADGES = {
-    VERIFIED_ORIGINAL: { color: "#fff", bg: "#10b981", border: "#10b981", label: "VERIFIED",   icon: "shield-check" },
-    MODIFIED:          { color: "#fff", bg: "#f59e0b", border: "#f59e0b", label: "MODIFIED",   icon: "shield-alert" },
-    UNVERIFIED:        { color: "#fff", bg: "#ef4444", border: "#ef4444", label: "UNVERIFIED", icon: "shield-x" },
-    AI_GENERATED:      { color: "#fff", bg: "#8b5cf6", border: "#8b5cf6", label: "AI GEN",     icon: "sparkles" },
-    REVOKED:           { color: "#fff", bg: "#ef4444", border: "#ef4444", label: "REVOKED",    icon: "shield-x" },
-    UNKNOWN:           { color: "#fff", bg: "#3b82f6", border: "#3b82f6", label: "UNKNOWN",    icon: "shield" },
+    VERIFIED_ORIGINAL: { color: "#fff", bg: "#34d399", border: "#34d399", label: "VERIFIED",   icon: "shield-check" },
+    MODIFIED:          { color: "#fff", bg: "#fbbf24", border: "#fbbf24", label: "MODIFIED",   icon: "shield-alert" },
+    UNVERIFIED:        { color: "#fff", bg: "#f43f5e", border: "#f43f5e", label: "UNVERIFIED", icon: "shield-x" },
+    AI_GENERATED:      { color: "#fff", bg: "#a78bfa", border: "#a78bfa", label: "AI GEN",     icon: "sparkles" },
+    REVOKED:           { color: "#fff", bg: "#f43f5e", border: "#f43f5e", label: "REVOKED",    icon: "shield-x" },
+    UNKNOWN:           { color: "#fff", bg: "#71717a", border: "#71717a", label: "UNKNOWN",    icon: "shield" },
   };
 
   const SHIELD_PATHS = {
