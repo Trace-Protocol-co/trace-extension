@@ -181,11 +181,11 @@
       else if (verdict === "UNKNOWN") window.open(APP_URL + "/verify", "_blank");
     });
 
-    // Hover panel
+    // Hover panel — positioned smartly so it stays in viewport
     const panel = document.createElement("div");
     panel.className = "trace-badge-panel";
     panel.style.cssText = [
-      "display:none","position:absolute","top:36px","right:0","width:300px",
+      "display:none","position:fixed","width:300px",
       "background:#09090b","border:1px solid #27272a","border-radius:10px",
       "padding:14px","font-family:-apple-system,'Segoe UI',sans-serif","font-size:11px",
       "color:#a1a1aa","z-index:2147483647","box-shadow:0 8px 32px rgba(0,0,0,.9)",
@@ -265,12 +265,40 @@
       </div>
     `;
 
-    badge.appendChild(panel);
+    // Append panel to body (not badge) so it escapes any overflow:hidden parent
+    document.body.appendChild(panel);
 
-    // Sticky hover — panel stays open with grace period so user can move mouse to it
+    // Sticky hover — position smart, grace period to move mouse to panel
     let hideTimer = null;
     const showPanel = () => {
       if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; }
+
+      // Position panel based on badge location in viewport
+      const badgeRect = badge.getBoundingClientRect();
+      const panelWidth = 300;
+      const panelEstHeight = 380;
+      const margin = 8;
+
+      let left = badgeRect.right - panelWidth;
+      let top  = badgeRect.bottom + margin;
+
+      // If panel would go off bottom of viewport, place above badge
+      if (top + panelEstHeight > window.innerHeight) {
+        top = badgeRect.top - panelEstHeight - margin;
+      }
+      // If panel would go off left edge, align to left of badge instead
+      if (left < margin) {
+        left = badgeRect.left;
+      }
+      // If still off right edge, clamp
+      if (left + panelWidth > window.innerWidth - margin) {
+        left = window.innerWidth - panelWidth - margin;
+      }
+      // Never go negative on top
+      if (top < margin) top = margin;
+
+      panel.style.left = left + "px";
+      panel.style.top  = top + "px";
       panel.style.display = "block";
     };
     const queueHide = () => {
@@ -281,6 +309,15 @@
     badge.addEventListener("mouseleave", queueHide);
     panel.addEventListener("mouseenter", showPanel);
     panel.addEventListener("mouseleave", queueHide);
+
+    // Clean up panel if badge is removed
+    const cleanup = new MutationObserver(() => {
+      if (!document.body.contains(badge)) {
+        panel.remove();
+        cleanup.disconnect();
+      }
+    });
+    cleanup.observe(document.body, { childList: true, subtree: true });
 
     container.appendChild(badge);
   }
