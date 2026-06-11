@@ -28,7 +28,7 @@
   };
 
   const processed = new WeakSet();
-  const MIN_SIZE  = 100;
+  const MIN_SIZE  = 60;  // catches small thumbnails too
   const verdictCache = new Map(); // hash -> verdict (survives page reloads via storage)
 
   // Load cached verdicts from chrome.storage on init
@@ -125,7 +125,8 @@
     for (let i = 0; i < 4; i++) {
       const tag = container.tagName;
       const pos = getComputedStyle(container).position;
-      if (pos !== "static" || tag === "FIGURE" || tag === "PICTURE" || tag === "LI" || tag === "ARTICLE") break;
+      if (pos !== "static" || tag === "FIGURE" || tag === "PICTURE" || tag === "LI"
+          || tag === "ARTICLE" || tag === "VIDEO" || tag === "DIV") break;
       if (container.parentElement) container = container.parentElement;
       else break;
     }
@@ -138,15 +139,14 @@
 
     const badge = document.createElement("div");
     badge.className = "trace-badge";
-    // Responsive sizing based on media dimensions
+    // Fully responsive sizing — badge scales to media frame, capped to keep visibility
     const mediaRect = img.getBoundingClientRect();
-    const smaller   = Math.min(mediaRect.width, mediaRect.height);
-    const badgeSize = smaller < 200 ? 24
-                    : smaller < 400 ? 32
-                    : smaller < 700 ? 40
-                    : 48;
-    const iconSize  = Math.round(badgeSize * 0.5);
-    const offset    = Math.round(badgeSize * 0.25);
+    const smaller   = Math.min(mediaRect.width || 200, mediaRect.height || 200);
+    // Badge is ~18% of smaller dimension, clamped between 20 and 56px
+    let badgeSize = Math.round(smaller * 0.18);
+    badgeSize     = Math.max(20, Math.min(56, badgeSize));
+    const iconSize = Math.max(12, Math.round(badgeSize * 0.55));
+    const offset   = Math.max(4, Math.round(badgeSize * 0.2));
 
     badge.style.cssText = [
       "position:absolute",
@@ -380,9 +380,10 @@
   async function processVideo(video) {
     if (!traceEnabled) return;
     if (processed.has(video)) return;
-    const w = video.videoWidth || video.offsetWidth || 0;
-    const h = video.videoHeight || video.offsetHeight || 0;
-    if (w < MIN_SIZE || h < MIN_SIZE) return;
+    const w = video.videoWidth || video.offsetWidth || video.clientWidth || 0;
+    const h = video.videoHeight || video.offsetHeight || video.clientHeight || 0;
+    // Accept any video — even small autoplay clips on social feeds
+    if (w < 50 || h < 50) return;
 
     processed.add(video);
 
@@ -431,9 +432,19 @@
     if (w >= MIN_SIZE) {
       processVideo(video);
     } else {
-      video.addEventListener("loadeddata", () => processVideo(video), { once: true });
-      video.addEventListener("loadedmetadata", () => processVideo(video), { once: true });
+      // Fire on every event that signals video is ready or playing — covers autoplay
+      const handler = () => { if (!processed.has(video)) processVideo(video); };
+      video.addEventListener("loadeddata",   handler, { once: false });
+      video.addEventListener("loadedmetadata", handler, { once: false });
+      video.addEventListener("playing",      handler, { once: false });
+      video.addEventListener("play",         handler, { once: false });
+      video.addEventListener("canplay",      handler, { once: false });
     }
+    // Also watch for src changes (Twitter swaps video src mid-playback)
+    const obs = new MutationObserver(() => {
+      if (!processed.has(video)) processVideo(video);
+    });
+    obs.observe(video, { attributes: true, attributeFilter: ["src","poster"] });
   }
 
   let traceEnabled = true;
