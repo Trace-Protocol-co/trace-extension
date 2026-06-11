@@ -138,9 +138,23 @@
 
     const badge = document.createElement("div");
     badge.className = "trace-badge";
+    // Responsive sizing based on media dimensions
+    const mediaRect = img.getBoundingClientRect();
+    const smaller   = Math.min(mediaRect.width, mediaRect.height);
+    const badgeSize = smaller < 200 ? 24
+                    : smaller < 400 ? 32
+                    : smaller < 700 ? 40
+                    : 48;
+    const iconSize  = Math.round(badgeSize * 0.5);
+    const offset    = Math.round(badgeSize * 0.25);
+
     badge.style.cssText = [
-      "position:absolute","top:10px","right:10px","z-index:2147483647",
-      "width:36px","height:36px","border-radius:50%",
+      "position:absolute",
+      "top:" + offset + "px",
+      "right:" + offset + "px",
+      "z-index:2147483647",
+      "width:" + badgeSize + "px","height:" + badgeSize + "px",
+      "border-radius:50%",
       "display:flex","align-items:center","justify-content:center",
       "background:" + cfg.bg,
       "border:2px solid #fff",
@@ -149,9 +163,10 @@
       "box-shadow:0 4px 12px rgba(0,0,0,0.5), 0 0 0 1px " + cfg.border + ", 0 0 20px " + cfg.border + "60",
       "transition:transform 0.15s ease",
     ].join(";");
+    badge.dataset.iconSize = iconSize;
 
     badge.innerHTML = `
-      <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24"
+      <svg xmlns="http://www.w3.org/2000/svg" width="${iconSize}" height="${iconSize}" viewBox="0 0 24 24"
         fill="none" stroke="#fff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
         <path d="${SHIELD_PATHS[cfg.icon]}"/>
       </svg>
@@ -361,11 +376,72 @@
     obs.observe(img, { attributes: true, attributeFilter: ["src","srcset","data-src","data-lazy","data-original","data-bbc-width"] });
   }
 
+  // Process video element — sample first frame to canvas
+  async function processVideo(video) {
+    if (!traceEnabled) return;
+    if (processed.has(video)) return;
+    const w = video.videoWidth || video.offsetWidth || 0;
+    const h = video.videoHeight || video.offsetHeight || 0;
+    if (w < MIN_SIZE || h < MIN_SIZE) return;
+
+    processed.add(video);
+
+    // Capture first frame as image proxy
+    let hash = null;
+    try {
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.min(64, w);
+      canvas.height = Math.min(64, h);
+      const ctx = canvas.getContext("2d");
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      const data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+      const buf = await crypto.subtle.digest("SHA-256", data.buffer);
+      hash = Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2,"0")).join("");
+    } catch { /* canvas may be tainted */ }
+
+    if (!hash) {
+      // URL hash fallback
+      const src = video.currentSrc || video.src || video.querySelector("source")?.src || "";
+      if (!src) return;
+      const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(src));
+      hash = Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2,"0")).join("");
+    }
+
+    // Inject badge using same logic as images (treat video as media element)
+    const cachedVerdict = verdictCache.get(hash);
+    injectBadge(video, cachedVerdict?.verdict || "UNKNOWN", cachedVerdict || {});
+    writeBankSighting(video, "UNKNOWN");
+
+    try {
+      const result = await chrome.runtime.sendMessage({
+        type: "VERIFY_HASH",
+        hash,
+        pageUrl: window.location.href,
+        imgSrc: video.currentSrc || video.src || "",
+      });
+      if (result?.verdict && result.verdict !== "ERROR") {
+        verdictCache.set(hash, result);
+        injectBadge(video, result.verdict, result);
+      }
+    } catch { /* ignore */ }
+  }
+
+  function tryProcessVideo(video) {
+    const w = video.videoWidth || video.offsetWidth || 0;
+    if (w >= MIN_SIZE) {
+      processVideo(video);
+    } else {
+      video.addEventListener("loadeddata", () => processVideo(video), { once: true });
+      video.addEventListener("loadedmetadata", () => processVideo(video), { once: true });
+    }
+  }
+
   let traceEnabled = true;
   chrome.storage.local.get("trace_enabled", items => {
     traceEnabled = items.trace_enabled !== false;
     if (traceEnabled) {
       document.querySelectorAll("img").forEach(img => { tryProcess(img); watchLazy(img); });
+      document.querySelectorAll("video").forEach(v => tryProcessVideo(v));
     }
   });
 
@@ -376,6 +452,7 @@
         document.querySelectorAll(".trace-badge").forEach(b => b.remove());
       } else {
         document.querySelectorAll("img").forEach(img => { tryProcess(img); watchLazy(img); });
+        document.querySelectorAll("video").forEach(v => tryProcessVideo(v));
       }
     }
     // Invalidate cache when user manually verifies (refreshes verdicts on next visit)
@@ -389,9 +466,11 @@
     mutations.forEach(m => {
       m.addedNodes.forEach(node => {
         if (node.nodeType !== 1) return;
-        if (node.tagName === "IMG") { tryProcess(node); watchLazy(node); }
+        if (node.tagName === "IMG")        { tryProcess(node); watchLazy(node); }
+        else if (node.tagName === "VIDEO") { tryProcessVideo(node); }
         else if (node.querySelectorAll) {
           node.querySelectorAll("img").forEach(img => { tryProcess(img); watchLazy(img); });
+          node.querySelectorAll("video").forEach(v => tryProcessVideo(v));
         }
       });
     });
