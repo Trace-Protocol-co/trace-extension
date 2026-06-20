@@ -76,11 +76,16 @@
 
   // Fallback hash from image URL when canvas blocked (BBC, Twitter, etc)
   async function urlHash(img) {
-    const src = img.currentSrc || img.src || img.getAttribute("data-src") || "";
-    if (!src) return null;
-    const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(src));
-    return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, "0")).join("");
-  }
+  let src = img.currentSrc || img.src || img.getAttribute("data-src") || "";
+  if (!src) return null;
+  // Normalize CDN size variants so thumbnail and expanded produce same hash
+  src = src.split("?")[0];
+  src = src.replace(/\/\d+(x\d+)?\//g, "/");
+  src = src.replace(/_\d+w\.(jpg|jpeg|png|webp)$/i, ".$1");
+  src = src.replace(/[-_](small|medium|large|thumb|tiny|orig)\.(jpg|jpeg|png|webp)$/i, ".$2");
+  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(src));
+  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, "0")).join("");
+}
 
   function getSize(img) {
     return {
