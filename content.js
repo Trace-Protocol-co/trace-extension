@@ -343,20 +343,22 @@
     // (works on CSP-restricted sites), finally URL hash as last resort
     let hash = await hashImage(img);
     if (!hash) {
-      // Canvas blocked — ask background to fetch and hash the actual bytes
-      const src = img.currentSrc || img.src || img.getAttribute("data-src") || "";
-      if (src) {
-        try {
-          const result = await chrome.runtime.sendMessage({
-            type: "HASH_IMAGE_URL",
-            imgUrl: src,
-          });
-          if (result?.hash) hash = result.hash;
-        } catch { /* fall through */ }
-      }
-    }
-    if (!hash) hash = await urlHash(img);
-    if (!hash) return;
+  // Try poster image first (works for HLS/lazy/cross-origin videos)
+  const poster = video.getAttribute("poster");
+  if (poster) {
+    let p = poster.split("?")[0].replace(/\/\d+(x\d+)?\//g, "/");
+    const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(p));
+    hash = Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2,"0")).join("");
+  }
+}
+if (!hash) {
+  // URL hash fallback
+  let src = video.currentSrc || video.src || video.querySelector("source")?.src || "";
+  if (!src) return;
+  src = src.split("?")[0].replace(/\/\d+(x\d+)?\//g, "/");
+  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(src));
+  hash = Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2,"0")).join("");
+}
 
     // Check local cache first — if we verified this image before, show that verdict
     const cachedVerdict = verdictCache.get(hash);
